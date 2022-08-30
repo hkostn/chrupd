@@ -84,11 +84,11 @@ If (-Not $curScriptDate) {
 }
 
 <# CHROMIUM VERSION #>
-$curVersion = (Get-ItemProperty -EA 0 -WA 0 HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Chromium).Version
+<# Move down. Depend on $sysLevel #>
 
 <# DEFAULT VALUES #>
 $debug = $fakeVer = $force = $ignVer = $ignHash = 0
-$tsMode = $crTask = $rmTask = $shTask = $xmlTask = $manTask = $noVbs = $confirm = 0
+$tsMode = $crTask = $rmTask = $shTask = $xmlTask = $manTask = $noVbs = $confirm = $sysLevel = 0
 $scheduler = $list = $appDir = 0
 $proxy = $linkArgs = ""
 $cAutoUp = 1
@@ -247,6 +247,7 @@ If ($_Args -iMatch "[-/?]h") {
 	Write-Host "`t`t", " <Official|Hibbiki|Marmaduke|Ungoogled|RobRich>"
 	Write-Host "`t", "-channel option must be set to <stable|dev>"
 	Write-Host "`t", "-arch    can be set to <64bit|32bit> default: 64bit"
+	Write-Host "`t", "-sysLevel install for all users to %PROGRAMFILES%\Chromium\ (only Windows 8+)"
 	Write-Host "`t", "-force   always (re)install, even if latest ver is installed", "`r`n"
 	Write-Host "`t", "-list    show version, editors and rss feeds from woolyss.com", "`r`n"
 	Write-Host "`t", "-crTask  create a daily scheduled task"
@@ -286,7 +287,7 @@ If ($_Args -iMatch "[-/?]ad?v?he?l?p?") {
 
 ForEach ($a in $_Args) {
 	<# handle only 'flags', no options with args #>
-	$flags = "[-/](force|fakeVer|list|rss|crTask|rmTask|shTask|xmlTask|manTask|noVbs|confirm|scheduler|ignHash|ignVer|cUpdate|appDir)"
+	$flags = "[-/](force|fakeVer|list|rss|crTask|rmTask|shTask|xmlTask|manTask|noVbs|confirm|scheduler|ignHash|ignVer|cUpdate|appDir|sysLevel)"
 	If ($match = $(Select-String -CaseSensitive -Pattern $flags -AllMatches -InputObject $a)) {
 		Invoke-Expression ('{0}="{1}"' -f ($match -Replace "^-", "$"), 1);
 		$_Args = ($_Args) | Where-Object { $_ -ne $match }
@@ -346,6 +347,13 @@ $items.GetEnumerator() | ForEach-Object {
    "64bit|64|x64" = "64-bit";
 }.GetEnumerator() | ForEach-Object {
 	If ($_.Key -Match $arch) { $arch = $_.Value }
+}
+
+<# CHROMIUM VERSION #>
+If ($sysLevel) {
+	$curVersion = (Get-ItemProperty -EA 0 -WA 0 HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Chromium).Version
+} Else {
+	$curVersion = (Get-ItemProperty -EA 0 -WA 0 HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Chromium).Version
 }
 
 <# GET WINDOWS VERSION #>
@@ -684,6 +692,9 @@ If ( $(Try { -Not (Test-Path variable:local:tsMode) -Or ([string]::IsNullOrWhite
 }
 $vbsWrapper = $scriptDir + "\chrupd.vbs"
 $taskArgs = "-scheduler -editor $editor -arch $arch -channel $channel -cAutoUp $cAutoUp"
+If ($sysLevel) { 
+	$taskArgs += " -sysLevel"
+}
 If ($noVbs -eq 0) {
 	$taskCmd = "$vbsWrapper"
 } Else {
@@ -763,9 +774,10 @@ If ($crTask -eq 1) {
 		1 {
 			$action = New-ScheduledTaskAction -Execute $taskCmd -Argument "$taskArgs" -WorkingDirectory "$scriptDir"
 			$trigger = New-ScheduledTaskTrigger -RandomDelay (New-TimeSpan -Hour 1) -Daily -At 17:00
+			If ($sysLevel) {$taskUser = "NT AUTHORITY\SYSTEM" } Else { $taskUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
 			If (-Not (&Get-ScheduledTask -EA 0 -TaskName "$scriptName")) {
 				Write-Msg $($taskMsg.create)
-				Try { (Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "$scriptName" -Description "$($taskMsg.descr)") | Out-Null }
+				Try { (Register-ScheduledTask -Action $action -Trigger $trigger -User $taskUser -TaskName "$scriptName" -Description "$($taskMsg.descr)") | Out-Null }
 				Catch { Write-Msg "$($taskMsg.problem)`r`nERROR: `"$($_.Exception.Message)`"" }
 			} Else {
 				Write-Msg $($taskMsg.exists)
@@ -988,9 +1000,15 @@ Write-Msg -o log "Start (pid:$pid name:$($(Get-PSHostProcessInfo | Where-Object 
 
 <# VERIFY CURRENT CHROME VERSION #>
 If (!$curVersion) {
+	If ($sysLevel) {
+	$curVersion = (Get-ChildItem ${env:ProgramFiles}\Chromium\Application -EA 0 -WA 0 |
+		Where-Object { $_.Key -Match "\d\d.\d.\d{4}\.\d{1,3}" } ).Key | 
+		Sort-Object | Select-Object -Last 1
+	} Else {
 	$curVersion = (Get-ChildItem ${env:LocalAppData}\Chromium\Application -EA 0 -WA 0 |
 		Where-Object { $_.Key -Match "\d\d.\d.\d{4}\.\d{1,3}" } ).Key | 
 		Sort-Object | Select-Object -Last 1
+	}
 }
 If ($force -eq 1) {
 	Write-Msg -o tee "Forcing update, ignoring currently installed Chromium version `"$curVersion`""
@@ -1641,6 +1659,9 @@ If (( $(Try { (Test-Path variable:local:fileHash) -And (-Not [string]::IsNullOrW
 
 	If ($fileFmt -eq "EXECUTABLE") {
 		$exeArgs = "--do-not-launch-chrome"
+		If ($sysLevel) {
+                        $exeArgs += " --system-level"
+		}
 		Write-Msg -o dbg,1 "`$p = Start-Process -FilePath `"$saveAsPath`" -ArgumentList $exeArgs -Wait -NoNewWindow -PassThru"
 		$p = (Start-Process -FilePath "$saveAsPath" -ArgumentList $exeArgs -Wait -NoNewWindow -PassThru)
 		If ($p.ExitCode -eq 0) {
